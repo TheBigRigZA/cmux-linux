@@ -311,21 +311,15 @@ impl AppState {
             }
         }
 
-        // Before removing from workspaces, free all Ghostty surfaces in the split engine.
-        if let Some(engine) = self.split_engines.get(index) {
-            let mut surfaces = Vec::new();
-            engine.root.collect_surfaces(&mut surfaces);
-            for surface in surfaces {
-                if !surface.is_null() {
-                    unsafe {
-                        crate::ghostty::ffi::ghostty_surface_free(surface);
-                    }
-                    if let Ok(mut reg) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
-                        reg.remove(&(surface as usize));
-                    }
-                }
-            }
-        }
+        // Do NOT free Ghostty surfaces here. Freeing is owned by the GLArea
+        // unrealize handler (src/ghostty/surface.rs): removing the engine and
+        // the GtkStack page below destroys the GLAreas, GTK fires unrealize,
+        // and the handler takes each surface out of its cell and frees it
+        // exactly once (it also cleans SURFACE_REGISTRY / GL_TO_SURFACE).
+        // Freeing here as well double-freed every surface whose tree pointer
+        // was populated (session-restored workspaces): double Surface.deinit
+        // means pthread_join on already-joined threads — the close-workspace
+        // segfault.
         self.split_engines.remove(index);
 
         let workspace = self.workspaces.remove(index);

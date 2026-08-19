@@ -939,8 +939,12 @@ impl SplitEngine {
             return None; // Prevent closing last terminal; close workspace instead
         }
 
-        // Find the surface before removing it from the tree.
-        let surface_to_free = self.find_surface(active_id)?;
+        // Confirm the pane has a surface before removing it from the tree.
+        // (The surface itself is freed by the GLArea unrealize handler when
+        // remove_leaf_from_tree drops the widget — single ownership; freeing
+        // here as well double-freed it: double Surface.deinit → pthread_join
+        // UB → segfault.)
+        let _surface = self.find_surface(active_id)?;
 
         // Capture the raw GLArea pointer BEFORE the tree removal drops the GObject.
         // GL_AREA_REGISTRY holds raw pointers; once GTK finalizes the GObject the
@@ -962,14 +966,6 @@ impl SplitEngine {
             if let Ok(mut gl_to_surface) = crate::ghostty::callbacks::GL_TO_SURFACE.lock() {
                 gl_to_surface.remove(&(raw_ptr as usize));
             }
-        }
-
-        // Deregister from SURFACE_REGISTRY and free the surface.
-        unsafe {
-            ffi::ghostty_surface_free(surface_to_free);
-        }
-        if let Ok(mut registry) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
-            registry.remove(&(surface_to_free as usize));
         }
 
         // Update focus to the surviving pane.
