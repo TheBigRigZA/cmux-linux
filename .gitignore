@@ -35,7 +35,9 @@ __pycache__/
 # Zig
 .zig-cache/
 zig-out/
+# local toolchains unpacked in the project root (0.15.2 builds ghostty; zig/ is a 0.17-dev snapshot)
 zig-x86_64-linux-0.15.2/
+zig/
 
 # Rust
 target/
