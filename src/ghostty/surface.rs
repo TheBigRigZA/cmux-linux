@@ -692,19 +692,22 @@ pub(crate) unsafe extern "C" fn read_clipboard_cb(
     _userdata: *mut std::ffi::c_void,
     clipboard_type: crate::ghostty::ffi::ghostty_clipboard_e,
     request: *mut std::ffi::c_void,
-) {
+) -> bool {
+    // Contract (apprt/embedded.zig Options.read_clipboard): return true when
+    // the request was started and complete_clipboard_request gets called;
+    // false when it couldn't be started.
     use gtk4::prelude::*;
     use std::sync::atomic::Ordering;
 
     let surface_ptr = crate::ghostty::callbacks::SURFACE_PTR.load(Ordering::SeqCst);
     if surface_ptr == 0 {
-        return;
+        return false;
     }
     let surface = surface_ptr as ffi::ghostty_surface_t;
 
     let display = match gtk4::gdk::Display::default() {
         Some(d) => d,
-        None => return,
+        None => return false,
     };
     let clipboard = if clipboard_type == ffi::ghostty_clipboard_e_GHOSTTY_CLIPBOARD_SELECTION {
         display.primary_clipboard()
@@ -729,6 +732,7 @@ pub(crate) unsafe extern "C" fn read_clipboard_cb(
     unsafe {
         ffi::ghostty_surface_complete_clipboard_request(surface, text_ptr, request, true);
     }
+    true
 }
 
 pub(crate) unsafe extern "C" fn confirm_read_clipboard_cb(

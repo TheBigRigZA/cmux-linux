@@ -159,12 +159,36 @@ impl SplitNode {
         }
     }
 
+    /// Resolve a leaf's surface pointer, falling back to the GL_TO_SURFACE
+    /// registry when the stored pointer is still the null placeholder.
+    /// Leaf.surface is only written by the one-shot post-restore sync, so any
+    /// pane created afterwards (socket workspace.create, splits) has a null
+    /// tree pointer even though its surface realized fine — the registry is
+    /// the source of truth in that case.
+    fn resolve_surface(
+        surface: ffi::ghostty_surface_t,
+        gl_area: &gtk4::GLArea,
+    ) -> ffi::ghostty_surface_t {
+        // Registry first: it is inserted on realize and removed on unrealize,
+        // so it never dangles. The stored pointer is only written by the
+        // post-restore sync and is NOT nulled on unrealize, so after an
+        // unrealize/re-realize cycle it can point at a freed surface.
+        if let Ok(gl_to_surface) = crate::ghostty::callbacks::GL_TO_SURFACE.lock() {
+            if let Some(&s) = gl_to_surface.get(&(gl_area.as_ptr() as usize)) {
+                return s as ffi::ghostty_surface_t;
+            }
+        }
+        surface
+    }
+
     /// Find the Ghostty surface handle for a specific pane by pane_id.
     /// Used by debug.type to send text to a specific pane's surface.
     pub fn find_surface_for_pane(&self, target_id: u64) -> Option<ffi::ghostty_surface_t> {
         match self {
-            SplitNode::Leaf { pane_id, surface, .. } => {
-                if *pane_id == target_id { Some(*surface) } else { None }
+            SplitNode::Leaf { pane_id, surface, gl_area, .. } => {
+                if *pane_id == target_id {
+                    Some(Self::resolve_surface(*surface, gl_area))
+                } else { None }
             }
             SplitNode::Preview { .. } => None, // No Ghostty surface
             SplitNode::Split { start, end, .. } => {
@@ -190,8 +214,10 @@ impl SplitNode {
     /// Find the ghostty surface handle for the leaf matching target_uuid (UUID string).
     pub fn find_by_uuid(&self, target_uuid: &str) -> Option<ffi::ghostty_surface_t> {
         match self {
-            SplitNode::Leaf { uuid, surface, .. } => {
-                if uuid.to_string() == target_uuid { Some(*surface) } else { None }
+            SplitNode::Leaf { uuid, surface, gl_area, .. } => {
+                if uuid.to_string() == target_uuid {
+                    Some(Self::resolve_surface(*surface, gl_area))
+                } else { None }
             }
             SplitNode::Preview { .. } => None, // No Ghostty surface to return
             SplitNode::Split { start, end, .. } => {

@@ -221,6 +221,8 @@ fn build_ui(
             confirm_read_clipboard_cb: Some(crate::ghostty::surface::confirm_read_clipboard_cb),
             write_clipboard_cb: Some(crate::ghostty::surface::write_clipboard_cb),
             close_surface_cb: Some(crate::ghostty::callbacks::close_surface_cb),
+            // tmux control mode passthrough (fork API) — not used on Linux yet.
+            tmux_control_cb: None,
         };
 
         let ghostty_app = ffi::ghostty_app_new(&runtime_config, config);
@@ -413,6 +415,16 @@ fn build_ui(
                 let pane_id = crate::ghostty::callbacks::BELL_PANE_ID.load(std::sync::atomic::Ordering::SeqCst);
                 if pane_id != 0 {
                     state.borrow_mut().set_pane_attention(pane_id);
+                }
+            }
+            // Process desktop notifications (OSC 9 / OSC 777) queued by action_cb
+            {
+                let pending: Vec<(u64, String, String)> = crate::ghostty::callbacks::NOTIFICATION_QUEUE
+                    .lock()
+                    .map(|mut q| q.drain(..).collect())
+                    .unwrap_or_default();
+                for (pane_id, title, body) in pending {
+                    state.borrow_mut().set_pane_attention_notify(pane_id, Some((&title, &body)));
                 }
             }
             // Process SSH events

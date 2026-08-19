@@ -39,6 +39,13 @@ pub static BELL_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// Phase 4: Flag indicating a bell is pending processing.
 pub static BELL_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Desktop notifications (OSC 9 / OSC 777) pending processing on the GTK main
+/// thread: (pane_id, title, body). Unlike the bell this needs a queue — the
+/// action payload carries strings that must be copied before the callback
+/// returns, and agent turn-stop hooks can fire on several panes in one tick.
+pub static NOTIFICATION_QUEUE: LazyLock<Mutex<Vec<(u64, String, String)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 /// Called by Ghostty from its renderer thread. Must not call any ghostty_* API inline.
 /// Instead, schedules ghostty_app_tick() on the GLib main loop (per D-04, GHOST-07).
 /// Wakeup count for diagnostic logging (only logs occasionally to avoid spam)
@@ -121,6 +128,41 @@ pub unsafe extern "C" fn action_cb(
             if let Some(pane_id) = pane_id {
                 BELL_PANE_ID.store(pane_id, std::sync::atomic::Ordering::SeqCst);
                 BELL_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        return true;
+    }
+
+    // Desktop notification (OSC 9 / OSC 777) — same attention pipeline as the
+    // bell, but carries a title/body shown in the panel and via notify-send.
+    // This is the doorbell agent hooks ring when a turn finishes.
+    if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_DESKTOP_NOTIFICATION {
+        if _target.tag == ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
+            let surface_ptr = unsafe { _target.target.surface } as usize;
+            let pane_id = {
+                if let Ok(reg) = SURFACE_REGISTRY.lock() {
+                    reg.get(&surface_ptr).copied()
+                } else {
+                    None
+                }
+            };
+            if let Some(pane_id) = pane_id {
+                // Copy the strings NOW — the pointers die with this call.
+                let notif = unsafe { action.action.desktop_notification };
+                let cstr = |p: *const std::os::raw::c_char| -> String {
+                    if p.is_null() {
+                        String::new()
+                    } else {
+                        unsafe { std::ffi::CStr::from_ptr(p) }
+                            .to_string_lossy()
+                            .into_owned()
+                    }
+                };
+                let title = cstr(notif.title);
+                let body = cstr(notif.body);
+                if let Ok(mut q) = NOTIFICATION_QUEUE.lock() {
+                    q.push((pane_id, title, body));
+                }
             }
         }
         return true;

@@ -453,6 +453,13 @@ impl AppState {
     /// Set attention on a specific pane. Called from bell handler.
     /// Updates workspace has_attention and sidebar dot.
     pub fn set_pane_attention(&mut self, pane_id: u64) {
+        self.set_pane_attention_notify(pane_id, None);
+    }
+
+    /// Set attention on a pane, optionally with a (title, body) message for
+    /// the desktop notification (OSC 9 / OSC 777 payloads). With no message
+    /// the generic terminal-bell notification is sent.
+    pub fn set_pane_attention_notify(&mut self, pane_id: u64, message: Option<(&str, &str)>) {
         for (idx, engine) in self.split_engines.iter_mut().enumerate() {
             if engine.root.set_attention(pane_id, true) {
                 self.workspaces[idx].has_attention = engine.root.any_attention();
@@ -468,7 +475,17 @@ impl AppState {
                         .unwrap_or(true);
                     if should_notify {
                         self.workspaces[idx].last_notification = Some(std::time::Instant::now());
-                        send_bell_notification(&self.gtk_app, &self.workspaces[idx].name, idx);
+                        match message {
+                            Some((title, body)) => send_desktop_notification(
+                                title,
+                                &format!("{} - {}", self.workspaces[idx].name, body),
+                            ),
+                            None => send_bell_notification(
+                                &self.gtk_app,
+                                &self.workspaces[idx].name,
+                                idx,
+                            ),
+                        }
                     }
                 }
                 break;
@@ -565,13 +582,20 @@ impl AppState {
 /// `notify-send` avoids this because it's a separate process whose D-Bus lifetime is
 /// independent of cmux.
 fn send_bell_notification(_app: &gtk4::Application, workspace_name: &str, _workspace_index: usize) {
-    let body = format!("{} - Terminal bell", workspace_name);
+    send_desktop_notification("Terminal Bell", &format!("{} - Terminal bell", workspace_name));
+}
+
+/// Send a desktop notification with an arbitrary title/body (e.g. an OSC 9
+/// payload from an agent hook). Same notify-send subprocess rationale as above.
+fn send_desktop_notification(title: &str, body: &str) {
+    let title = if title.is_empty() { "cmux".to_string() } else { title.to_string() };
+    let body = body.to_string();
     std::thread::spawn(move || {
         let result = std::process::Command::new("notify-send")
             .arg("--app-name=cmux")
             .arg("--icon=utilities-terminal")
             .arg("--expire-time=5000")
-            .arg("Terminal Bell")
+            .arg(&title)
             .arg(&body)
             .status();
         match result {

@@ -35,6 +35,91 @@ fn resolve_surface_ref(
     Ok(surface_ref.to_string())
 }
 
+/// Find a surface's ghostty handle by UUID across ALL workspaces (surfaces
+/// are addressed globally by UUID; restricting lookup to the active
+/// workspace made every send/read against a background workspace a silent
+/// no-op). With no id, falls back to the active pane of the active workspace.
+fn find_surface_any(
+    s: &crate::app_state::AppState,
+    id: &Option<String>,
+) -> Option<crate::ghostty::ffi::ghostty_surface_t> {
+    if let Some(uuid_str) = id {
+        s.split_engines
+            .iter()
+            .find_map(|engine| engine.find_surface_by_uuid(uuid_str))
+    } else {
+        s.split_engines.get(s.active_index).and_then(|engine| {
+            engine.root.find_active_pane_id()
+                .and_then(|pid| engine.root.find_surface_for_pane(pid))
+        })
+    }
+}
+
+/// Send committed typed-text input to a surface. Unlike ghostty_surface_text
+/// (the clipboard-paste path: bracketed-paste framing means shells insert the
+/// bytes into their edit buffer without executing), text_input delivers bytes
+/// as typed keystrokes and normalizes `\n` to `\r`, so newlines submit.
+fn send_text_input(surf: crate::ghostty::ffi::ghostty_surface_t, bytes: &[u8]) {
+    if surf.is_null() || bytes.is_empty() {
+        return;
+    }
+    unsafe {
+        crate::ghostty::ffi::ghostty_surface_text_input(
+            surf,
+            bytes.as_ptr() as *const std::os::raw::c_char,
+            bytes.len(),
+        );
+    }
+}
+
+/// Translate a send_key name into the byte sequence a terminal expects.
+/// Single characters pass through as-is; named keys and ctrl/alt combos map
+/// to their control bytes / escape sequences.
+fn key_to_bytes(key: &str) -> Option<Vec<u8>> {
+    // Any single character (including things like "a" or "/") is sent verbatim.
+    if key.chars().count() == 1 {
+        return Some(key.as_bytes().to_vec());
+    }
+    let lower = key.to_ascii_lowercase();
+    // ctrl+<letter> → C0 control byte; alt+<char> → ESC prefix.
+    if let Some(c) = lower.strip_prefix("ctrl+") {
+        let mut chars = c.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            if ch.is_ascii_lowercase() {
+                return Some(vec![(ch as u8) - b'a' + 1]);
+            }
+        }
+        return None;
+    }
+    if let Some(c) = lower.strip_prefix("alt+") {
+        let mut chars = c.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            let mut v = vec![0x1b];
+            v.extend_from_slice(ch.to_string().as_bytes());
+            return Some(v);
+        }
+        return None;
+    }
+    let seq: &[u8] = match lower.as_str() {
+        "enter" | "return" => b"\r",
+        "tab" => b"\t",
+        "space" => b" ",
+        "escape" | "esc" => b"\x1b",
+        "backspace" => b"\x7f",
+        "delete" | "del" => b"\x1b[3~",
+        "up" => b"\x1b[A",
+        "down" => b"\x1b[B",
+        "right" => b"\x1b[C",
+        "left" => b"\x1b[D",
+        "home" => b"\x1b[H",
+        "end" => b"\x1b[F",
+        "pageup" | "pgup" => b"\x1b[5~",
+        "pagedown" | "pgdn" => b"\x1b[6~",
+        _ => return None,
+    };
+    Some(seq.to_vec())
+}
+
 /// Dispatch a SocketCommand on the GTK main thread.
 /// SOCK-05: Only focus-intent commands (workspace.select, workspace.next/previous/last,
 /// pane.focus, pane.last, surface.focus) may call grab_active_focus() or focus_active_surface().
@@ -319,22 +404,12 @@ pub fn handle_socket_command(
 
         SocketCommand::DebugType { req_id, text, resp_tx } => {
             // SOCK-05: No focus side effects (sends text to active surface without changing focus).
-            let s = state.borrow();
-            if let Some(engine) = s.split_engines.get(s.active_index) {
-                if let Some(pane_id) = engine.root.find_active_pane_id() {
-                    if let Some(surface) = engine.root.find_surface_for_pane(pane_id) {
-                        if !surface.is_null() {
-                            let c_text = std::ffi::CString::new(text.clone()).unwrap_or_default();
-                            unsafe {
-                                crate::ghostty::ffi::ghostty_surface_text(
-                                    surface,
-                                    c_text.as_ptr(),
-                                    c_text.to_bytes().len(),
-                                );
-                            }
-                        }
-                    }
-                }
+            let surface = {
+                let s = state.borrow();
+                find_surface_any(&s, &None)
+            };
+            if let Some(surf) = surface {
+                send_text_input(surf, text.as_bytes());
             }
             let _ = resp_tx.send(ok(req_id, json!({})));
         }
@@ -445,83 +520,106 @@ pub fn handle_socket_command(
             // SOCK-05: send_text is NOT a focus-intent command — NO focus change.
             let surface = {
                 let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    if let Some(ref uuid_str) = id {
-                        engine.find_surface_by_uuid(uuid_str)
-                    } else {
-                        engine.root.find_active_pane_id()
-                            .and_then(|pid| engine.root.find_surface_for_pane(pid))
-                    }
-                } else { None }
+                find_surface_any(&s, &id)
             };
-            if let Some(surf) = surface {
-                if !surf.is_null() {
-                    let c_text = std::ffi::CString::new(text.clone()).unwrap_or_default();
-                    unsafe {
-                        crate::ghostty::ffi::ghostty_surface_text(
-                            surf,
-                            c_text.as_ptr(),
-                            c_text.to_bytes().len(),
-                        );
-                    }
+            match surface {
+                Some(surf) if !surf.is_null() => {
+                    send_text_input(surf, text.as_bytes());
+                    let _ = resp_tx.send(ok(req_id, json!({})));
                 }
+                _ => { let _ = resp_tx.send(err(req_id, "not_found", "surface not found")); }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
         SocketCommand::SurfaceSendKey { req_id, id, key, resp_tx } => {
             // SOCK-05: send_key is NOT a focus-intent command — NO focus change.
-            // For Phase 3, single printable chars sent as text.
-            // Complex key combos (ctrl+c, etc.) require ghostty_surface_key — Phase 4.
             let surface = {
                 let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    if let Some(ref uuid_str) = id {
-                        engine.find_surface_by_uuid(uuid_str)
-                    } else {
-                        engine.root.find_active_pane_id()
-                            .and_then(|pid| engine.root.find_surface_for_pane(pid))
-                    }
-                } else { None }
+                find_surface_any(&s, &id)
             };
-            if let Some(surf) = surface {
-                if !surf.is_null() && key.len() == 1 {
-                    let c_key = std::ffi::CString::new(key.clone()).unwrap_or_default();
-                    unsafe {
-                        crate::ghostty::ffi::ghostty_surface_text(
-                            surf,
-                            c_key.as_ptr(),
-                            c_key.to_bytes().len(),
-                        );
+            match surface {
+                Some(surf) if !surf.is_null() => {
+                    match key_to_bytes(&key) {
+                        Some(bytes) => {
+                            send_text_input(surf, &bytes);
+                            let _ = resp_tx.send(ok(req_id, json!({})));
+                        }
+                        None => {
+                            let _ = resp_tx.send(err(
+                                req_id,
+                                "bad_request",
+                                &format!("unknown key name: {key}"),
+                            ));
+                        }
                     }
                 }
+                _ => { let _ = resp_tx.send(err(req_id, "not_found", "surface not found")); }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
-        SocketCommand::SurfaceReadText { req_id, id: _, resp_tx } => {
+        SocketCommand::SurfaceReadText { req_id, id, resp_tx } => {
             // SOCK-05: No focus side effects.
-            // Stub — Ghostty screen buffer API not yet available. Phase 4.
-            let _ = resp_tx.send(ok(req_id, json!({"text": ""})));
+            // Reads the visible viewport of the surface's terminal screen.
+            let surface = {
+                let s = state.borrow();
+                find_surface_any(&s, &id)
+            };
+            match surface {
+                Some(surf) if !surf.is_null() => {
+                    use crate::ghostty::ffi;
+                    let sel = ffi::ghostty_selection_s {
+                        top_left: ffi::ghostty_point_s {
+                            tag: ffi::ghostty_point_tag_e_GHOSTTY_POINT_VIEWPORT,
+                            coord: ffi::ghostty_point_coord_e_GHOSTTY_POINT_COORD_TOP_LEFT,
+                            x: 0,
+                            y: 0,
+                        },
+                        bottom_right: ffi::ghostty_point_s {
+                            tag: ffi::ghostty_point_tag_e_GHOSTTY_POINT_VIEWPORT,
+                            coord: ffi::ghostty_point_coord_e_GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                            x: 0,
+                            y: 0,
+                        },
+                        rectangle: false,
+                    };
+                    let mut out: ffi::ghostty_text_s = unsafe { std::mem::zeroed() };
+                    let got = unsafe { ffi::ghostty_surface_read_text(surf, sel, &mut out) };
+                    let text = if got && !out.text.is_null() && out.text_len > 0 {
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts(out.text as *const u8, out.text_len)
+                        };
+                        String::from_utf8_lossy(bytes).into_owned()
+                    } else {
+                        String::new()
+                    };
+                    if got {
+                        unsafe { ffi::ghostty_surface_free_text(surf, &mut out) };
+                    }
+                    let _ = resp_tx.send(ok(req_id, json!({"text": text})));
+                }
+                _ => { let _ = resp_tx.send(err(req_id, "not_found", "surface not found")); }
+            }
         }
 
         SocketCommand::SurfaceHealth { req_id, id, resp_tx } => {
             // SOCK-05: health is NOT focus-intent — NO focus change.
             let (found, has_attention) = {
                 let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    if let Some(ref uuid_str) = id {
-                        let alive = engine.find_surface_by_uuid(uuid_str).is_some();
-                        let attn = engine.find_pane_id_by_uuid(uuid_str)
-                            .map(|pid| engine.root.pane_has_attention(pid))
-                            .unwrap_or(false);
-                        (alive, attn)
-                    } else {
-                        let attn = engine.root.find_active_pane_id()
-                            .map(|pid| engine.root.pane_has_attention(pid))
-                            .unwrap_or(false);
-                        (true, attn)
-                    }
+                if let Some(ref uuid_str) = id {
+                    // Search every workspace: surfaces are addressed globally.
+                    s.split_engines
+                        .iter()
+                        .find_map(|engine| {
+                            engine.find_pane_id_by_uuid(uuid_str).map(|pid| {
+                                (true, engine.root.pane_has_attention(pid))
+                            })
+                        })
+                        .unwrap_or((false, false))
+                } else if let Some(engine) = s.split_engines.get(s.active_index) {
+                    let attn = engine.root.find_active_pane_id()
+                        .map(|pid| engine.root.pane_has_attention(pid))
+                        .unwrap_or(false);
+                    (true, attn)
                 } else { (false, false) }
             };
             let _ = resp_tx.send(ok(req_id, json!({"alive": found, "has_attention": has_attention})));
@@ -532,13 +630,15 @@ pub fn handle_socket_command(
             // Queue a render on the target surface's GLArea.
             let gl_area = {
                 let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    let target_pane_id = if let Some(ref uuid_str) = id {
+                if let Some(ref uuid_str) = id {
+                    // Search every workspace: surfaces are addressed globally.
+                    s.split_engines.iter().find_map(|engine| {
                         engine.find_pane_id_by_uuid(uuid_str)
-                    } else {
-                        engine.root.find_active_pane_id()
-                    };
-                    target_pane_id.and_then(|pid| engine.gl_area_for_pane(pid))
+                            .and_then(|pid| engine.gl_area_for_pane(pid))
+                    })
+                } else if let Some(engine) = s.split_engines.get(s.active_index) {
+                    engine.root.find_active_pane_id()
+                        .and_then(|pid| engine.gl_area_for_pane(pid))
                 } else { None }
             };
             if let Some(area) = gl_area {
