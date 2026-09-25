@@ -154,6 +154,9 @@ async fn dispatch_line(
         "workspace.create" => commands::SocketCommand::WorkspaceCreate {
             req_id: req_id.clone(),
             remote_target: params.get("remote_target").and_then(|v| v.as_str()).map(String::from),
+            name: str_param(&params, "name"),
+            spawn: spawn_from_params(&params),
+            focus: params.get("focus").and_then(|v| v.as_bool()).unwrap_or(true),
             resp_tx,
         },
         "workspace.select" => commands::SocketCommand::WorkspaceSelect {
@@ -187,6 +190,8 @@ async fn dispatch_line(
             req_id: req_id.clone(),
             id: params.get("id").and_then(|v| v.as_str()).map(String::from),
             direction: params.get("direction").and_then(|v| v.as_str()).unwrap_or("horizontal").to_string(),
+            spawn: spawn_from_params(&params),
+            focus: params.get("focus").and_then(|v| v.as_bool()).unwrap_or(true),
             resp_tx,
         },
         "surface.focus" => commands::SocketCommand::SurfaceFocus {
@@ -309,6 +314,27 @@ async fn dispatch_line(
     })).to_string()
 }
 
+/// Read an optional string param, treating "" as absent.
+///
+/// An empty string is what a shell gives you for an unset variable
+/// (`--cwd "$MAYBE"`), and passing it through would mean "start in /" rather
+/// than "start wherever you would have".
+fn str_param(params: &serde_json::Value, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Pull the spawn overrides out of JSON-RPC params.
+fn spawn_from_params(params: &serde_json::Value) -> crate::spawn::SpawnSpec {
+    crate::spawn::SpawnSpec {
+        cwd: str_param(params, "cwd"),
+        command: str_param(params, "command"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +345,40 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/tmp/test-xdg") };
         let path = socket_path();
         assert_eq!(path, std::path::PathBuf::from("/tmp/test-xdg/cmux/cmux.sock"));
+    }
+
+    /// An unset shell variable arrives as "", and must mean "inherit",
+    /// not "start in /". `--cwd "$MAYBE_UNSET"` is the way this gets hit.
+    #[test]
+    fn empty_string_params_are_absent() {
+        let params = serde_json::json!({"cwd": "", "command": ""});
+        let spec = spawn_from_params(&params);
+        assert_eq!(spec.cwd, None);
+        assert_eq!(spec.command, None);
+    }
+
+    /// Absent keys and present keys both resolve the obvious way.
+    #[test]
+    fn spawn_params_round_trip() {
+        let spec = spawn_from_params(&serde_json::json!({"cwd": "/srv/app"}));
+        assert_eq!(spec.cwd.as_deref(), Some("/srv/app"));
+        assert_eq!(spec.command, None);
+
+        let spec = spawn_from_params(&serde_json::json!({}));
+        assert_eq!(spec, crate::spawn::SpawnSpec::default());
+    }
+
+    /// focus defaults to true so existing callers keep today's behaviour;
+    /// only an explicit false (from --no-focus) changes it.
+    #[test]
+    fn focus_defaults_to_true_when_absent() {
+        let params = serde_json::json!({});
+        let focus = params.get("focus").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(focus);
+
+        let params = serde_json::json!({"focus": false});
+        let focus = params.get("focus").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!focus);
     }
 
     /// SOCK-05: Focus policy whitelist is documented.

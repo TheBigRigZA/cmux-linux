@@ -38,6 +38,7 @@ pub fn create_surface(
     inherited_config: Option<ffi::ghostty_surface_config_s>,
     pane_id: u64,
     io_mode: SurfaceIoMode,
+    spawn: crate::spawn::SpawnSpec,
 ) -> (gtk4::GLArea, Rc<RefCell<Option<ffi::ghostty_surface_t>>>) {
     use gtk4::prelude::*;
     use std::sync::atomic::Ordering;
@@ -205,6 +206,25 @@ pub fn create_surface(
                         std::sync::Arc::into_raw(io_write_ctx.clone());
                     surface_config.io_write_userdata = ctx_raw as *mut std::ffi::c_void;
                     *userdata_cell.borrow_mut() = Some(ctx_raw);
+                }
+
+                // --cwd / --command. Ghostty reads these while building the
+                // surface, but nothing in ghostty.h promises it copies rather
+                // than retains, so the CStrings are kept alive in this scope
+                // until ghostty_surface_new has returned.
+                let c_cwd = spawn
+                    .cwd
+                    .as_deref()
+                    .and_then(|s| std::ffi::CString::new(s).ok());
+                let c_command = spawn
+                    .command
+                    .as_deref()
+                    .and_then(|s| std::ffi::CString::new(s).ok());
+                if let Some(ref c) = c_cwd {
+                    surface_config.working_directory = c.as_ptr();
+                }
+                if let Some(ref c) = c_command {
+                    surface_config.command = c.as_ptr();
                 }
 
                 eprintln!("cmux: calling ghostty_surface_new");

@@ -15,7 +15,8 @@ pub enum SocketCommand {
     // -- workspace.* --
     WorkspaceList    { req_id: Value, resp_tx: RespTx },
     WorkspaceCurrent { req_id: Value, resp_tx: RespTx },
-    WorkspaceCreate  { req_id: Value, remote_target: Option<String>, resp_tx: RespTx },
+    WorkspaceCreate  { req_id: Value, remote_target: Option<String>, name: Option<String>,
+                       spawn: crate::spawn::SpawnSpec, focus: bool, resp_tx: RespTx },
     /// `id` is the workspace UUID string from the client.
     WorkspaceSelect  { req_id: Value, id: String, resp_tx: RespTx },
     WorkspaceClose   { req_id: Value, id: String, resp_tx: RespTx },
@@ -27,7 +28,8 @@ pub enum SocketCommand {
 
     // -- surface.* (implemented in Plan 04) --
     SurfaceList      { req_id: Value, resp_tx: RespTx },
-    SurfaceSplit     { req_id: Value, id: Option<String>, direction: String, resp_tx: RespTx },
+    SurfaceSplit     { req_id: Value, id: Option<String>, direction: String,
+                       spawn: crate::spawn::SpawnSpec, focus: bool, resp_tx: RespTx },
     SurfaceFocus     { req_id: Value, id: String, resp_tx: RespTx },
     SurfaceClose     { req_id: Value, id: String, resp_tx: RespTx },
     SurfaceSendText  { req_id: Value, id: Option<String>, text: String, resp_tx: RespTx },

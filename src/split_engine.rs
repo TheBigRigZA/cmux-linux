@@ -426,7 +426,7 @@ impl SplitEngine {
                 *next_pane_id += 1;
                 // Create surface — realize callback will create Ghostty surface and wire registries
                 let (gl_area, _surface_cell) =
-                    crate::ghostty::surface::create_surface(app, ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+                    crate::ghostty::surface::create_surface(app, ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, crate::spawn::SpawnSpec::default());
                 // Phase 9: Attach right-click context menu (D-08)
                 attach_terminal_context_menu(&gl_area);
                 // D-06: preserve UUID from session
@@ -576,8 +576,26 @@ impl SplitEngine {
         self.split_active(gtk4::Orientation::Vertical)
     }
 
+    /// Split the active pane and focus the new one — the keyboard-shortcut path.
     pub fn split_active(&mut self, orientation: gtk4::Orientation) -> Option<u64> {
-        let active_id = self.active_pane_id;
+        let target = self.active_pane_id;
+        self.split_pane(target, orientation, crate::spawn::SpawnSpec::default(), true)
+    }
+
+    /// Split `target_pane_id`, optionally moving focus to the new pane.
+    ///
+    /// `split_active` used to be the only entry point, so `surface.split`
+    /// discarded the caller's `--id` and split whatever happened to be focused.
+    /// Taking the target explicitly is what makes `cmux split --id` mean
+    /// anything.
+    pub fn split_pane(
+        &mut self,
+        target_pane_id: u64,
+        orientation: gtk4::Orientation,
+        spawn: crate::spawn::SpawnSpec,
+        focus_new: bool,
+    ) -> Option<u64> {
+        let active_id = target_pane_id;
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
@@ -621,7 +639,7 @@ impl SplitEngine {
 
         // Create new GLArea + surface for the new pane.
         eprintln!(
-            "cmux: split_active calling create_surface for new_pane_id={}",
+            "cmux: split_pane calling create_surface for new_pane_id={}",
             new_pane_id
         );
         let (new_gl_area, _surface_cell) = crate::ghostty::surface::create_surface(
@@ -630,6 +648,7 @@ impl SplitEngine {
             Some(inherited_config),
             new_pane_id,
             crate::ghostty::surface::SurfaceIoMode::Exec,
+            spawn,
         );
         // Phase 9: Attach right-click context menu (D-08)
         attach_terminal_context_menu(&new_gl_area);
@@ -654,12 +673,31 @@ impl SplitEngine {
             stack.set_visible_child_name(&name);
         }
 
-        // After realize, update active focus to the new pane.
-        self.active_pane_id = new_pane_id;
-        self.root.update_focus_css(new_pane_id);
+        if focus_new {
+            // After realize, update active focus to the new pane.
+            self.active_pane_id = new_pane_id;
+            self.root.update_focus_css(new_pane_id);
 
-        // Focus the new GLArea widget so it receives keyboard events.
-        new_gl_area.grab_focus();
+            // Focus the new GLArea widget so it receives keyboard events.
+            new_gl_area.grab_focus();
+        } else {
+            // --no-focus: the split still happened, but the caller keeps its
+            // pane. The parent surface was unfocused above (SPLIT-07) so the
+            // new pane could take over; hand GTK focus back to it.
+            //
+            // Deliberately NOT ghostty_surface_set_focus(.., true) here. Two
+            // reasons, both in surface.rs's unrealize note: the reparent above
+            // can unrealize the old GLArea and free the surface, so the
+            // pointer from before the split may be dangling; and marking the
+            // old pane focused while the new one is too trips ghostty's
+            // early-return guard. EventControllerFocus issues set_focus(true)
+            // for us once GTK actually hands the widget its focus back.
+            self.active_pane_id = active_id;
+            self.root.update_focus_css(active_id);
+            if let Some(area) = self.gl_area_for_pane(active_id) {
+                area.grab_focus();
+            }
+        }
 
         Some(new_pane_id)
     }

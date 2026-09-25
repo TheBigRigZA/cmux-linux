@@ -4,6 +4,7 @@ use gtk4::{Application, ApplicationWindow, gio, CssProvider, StyleContext};
 use std::ffi::CString;
 
 mod ghostty;
+mod spawn;
 mod workspace;
 mod split_engine;
 mod app_state;

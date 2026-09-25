@@ -62,7 +62,24 @@ pub enum Commands {
 
     // -- Workspace management --
     /// Create a new workspace
-    NewWorkspace,
+    NewWorkspace {
+        /// Name for the new workspace (default: "Workspace N")
+        #[arg(long)]
+        name: Option<String>,
+        /// Directory the workspace's first terminal starts in
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Command to run instead of the default shell
+        /// (currently rejected: this ghostty build spawns no process when it is set)
+        #[arg(long)]
+        command: Option<String>,
+        /// Switch to the new workspace (the default)
+        #[arg(long, conflicts_with = "no_focus")]
+        focus: bool,
+        /// Create it in the background, leaving the current workspace focused
+        #[arg(long)]
+        no_focus: bool,
+    },
     /// Select a workspace by ID
     SelectWorkspace {
         /// Workspace UUID
@@ -105,6 +122,19 @@ pub enum Commands {
         /// Target surface ID (default: focused)
         #[arg(long)]
         id: Option<String>,
+        /// Directory the new pane's terminal starts in
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Command to run in the new pane instead of the default shell
+        /// (currently rejected: this ghostty build spawns no process when it is set)
+        #[arg(long)]
+        command: Option<String>,
+        /// Focus the new pane (the default)
+        #[arg(long, conflicts_with = "no_focus")]
+        focus: bool,
+        /// Leave focus on the current pane
+        #[arg(long)]
+        no_focus: bool,
     },
     /// Focus a surface by ID
     FocusSurface {
@@ -568,7 +598,23 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
 
         Commands::Raw { .. } => unreachable!("Raw handled separately"),
 
-        Commands::NewWorkspace => ("workspace.create", json!({})),
+        // `focus` is the default, so the flag is affirmative only — it
+        // exists for parity with the macOS CLI. `--no-focus` is the one that
+        // changes anything.
+        Commands::NewWorkspace { name, cwd, command, focus: _, no_focus } => {
+            let mut p = serde_json::Map::new();
+            if let Some(ref v) = name {
+                p.insert("name".into(), json!(v));
+            }
+            if let Some(ref v) = cwd {
+                p.insert("cwd".into(), json!(v));
+            }
+            if let Some(ref v) = command {
+                p.insert("command".into(), json!(v));
+            }
+            p.insert("focus".into(), json!(!*no_focus));
+            ("workspace.create", Value::Object(p))
+        }
         Commands::SelectWorkspace { id } => ("workspace.select", json!({"id": id})),
         Commands::CloseWorkspace { id } => ("workspace.close", json!({"id": id})),
         Commands::RenameWorkspace { id, name } => {
@@ -582,12 +628,19 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
         }
 
         Commands::ListSurfaces => ("surface.list", json!({})),
-        Commands::Split { direction, id } => {
+        Commands::Split { direction, id, cwd, command, focus: _, no_focus } => {
             let mut p = serde_json::Map::new();
             p.insert("direction".into(), json!(direction));
             if let Some(ref id) = id {
                 p.insert("id".into(), json!(id));
             }
+            if let Some(ref v) = cwd {
+                p.insert("cwd".into(), json!(v));
+            }
+            if let Some(ref v) = command {
+                p.insert("command".into(), json!(v));
+            }
+            p.insert("focus".into(), json!(!*no_focus));
             ("surface.split", Value::Object(p))
         }
         Commands::FocusSurface { id } => ("surface.focus", json!({"id": id})),

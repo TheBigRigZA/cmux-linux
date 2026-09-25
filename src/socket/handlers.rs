@@ -225,7 +225,13 @@ pub fn handle_socket_command(
             }
         }
 
-        SocketCommand::WorkspaceCreate { req_id, remote_target, resp_tx } => {
+        SocketCommand::WorkspaceCreate { req_id, remote_target, name, spawn, focus, resp_tx } => {
+            // See the note on SurfaceSplit: --command is refused until
+            // libghostty honours surface_config.command.
+            if spawn.command.is_some() {
+                let _ = resp_tx.send(err(req_id, "unsupported", "--command is not supported by this ghostty build: setting surface_config.command leaves the surface with no process at all. The value is plumbed correctly and will work once ghostty is updated."));
+                return;
+            }
             if let Some(target) = remote_target {
                 // SSH workspace creation per D-13, D-15
                 // Create per-workspace bridge for SSH I/O routing
@@ -251,8 +257,10 @@ pub fn handle_socket_command(
                 }
                 let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid_str, "remote": true})));
             } else {
-                // Local workspace (existing behavior)
-                let id = state.borrow_mut().create_workspace();
+                // Local workspace. --name / --cwd / --command / --focus land here;
+                // the remote branch above ignores them, and the CLI has no way
+                // to reach it (remote_target is raw-only).
+                let id = state.borrow_mut().create_workspace_with(spawn, name, focus);
                 let s = state.borrow();
                 let uuid_str = s.workspaces.iter()
                     .find(|ws| ws.id == id)
@@ -431,35 +439,72 @@ pub fn handle_socket_command(
             let _ = resp_tx.send(ok(req_id, json!({"surfaces": panes})));
         }
 
-        SocketCommand::SurfaceSplit { req_id, id: _, direction, resp_tx } => {
-            // Split the active pane in the active workspace.
-            // SplitEngine::split_active splits by orientation and returns new pane_id.
+        SocketCommand::SurfaceSplit { req_id, id, direction, spawn, focus, resp_tx } => {
+            // libghostty at the pinned SHA spawns no process when
+            // surface_config.command is non-null -- any value, including the
+            // shell it runs by default. Verified 2026-09-24. Refuse loudly
+            // rather than hand back a pane that looks fine and is dead.
+            if spawn.command.is_some() {
+                let _ = resp_tx.send(err(req_id, "unsupported", "--command is not supported by this ghostty build: setting surface_config.command leaves the surface with no process at all. The value is plumbed correctly and will work once ghostty is updated."));
+                return;
+            }
+            // Split a pane in the active workspace: `id` if given, else the
+            // focused one. This arm used to destructure `id: _` and always
+            // split the active pane, so `cmux split --id <uuid>` silently
+            // split whatever had focus instead of what was asked for.
             let orientation = if direction == "vertical" {
                 gtk4::Orientation::Vertical
             } else {
                 gtk4::Orientation::Horizontal
             };
-            let result = {
+            let result: Result<String, (&str, &str)> = {
                 let mut s = state.borrow_mut();
-                let idx = s.active_index;
-                if let Some(engine) = s.split_engines.get_mut(idx) {
-                    engine.split_active(orientation)
-                        .and_then(|new_pane_id| {
-                            // Find the uuid of the newly created pane.
-                            engine.all_panes().into_iter()
-                                .find(|(_, pid, _)| *pid == new_pane_id)
-                                .map(|(uuid, _, _)| uuid.to_string())
+                let active_idx = s.active_index;
+                // A surface UUID is unique across the app, so an explicit --id
+                // is resolved across every workspace -- splitting a background
+                // workspace should not require selecting it first. Without
+                // --id, the focused pane of the active workspace is the target.
+                let located = match id {
+                    Some(ref uuid) => s
+                        .split_engines
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, engine)| {
+                            engine.find_pane_id_by_uuid(uuid).map(|pid| (i, pid))
+                        }),
+                    None => s
+                        .split_engines
+                        .get(active_idx)
+                        .map(|engine| (active_idx, engine.active_pane_id)),
+                };
+                match located {
+                    // An unknown --id is reported, not quietly redirected to
+                    // the focused pane.
+                    None => Err(("unknown_surface", "no surface with that id")),
+                    Some((idx, target)) => s
+                        .split_engines
+                        .get_mut(idx)
+                        .and_then(|engine| {
+                            engine.split_pane(target, orientation, spawn, focus).and_then(
+                                |new_pane_id| {
+                                    // Find the uuid of the newly created pane.
+                                    engine
+                                        .all_panes()
+                                        .into_iter()
+                                        .find(|(_, pid, _)| *pid == new_pane_id)
+                                        .map(|(uuid, _, _)| uuid.to_string())
+                                },
+                            )
                         })
-                } else {
-                    None
+                        .ok_or(("split_failed", "could not split pane")),
                 }
             };
             match result {
-                Some(uuid_str) => {
+                Ok(uuid_str) => {
                     let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid_str})));
                 }
-                None => {
-                    let _ = resp_tx.send(err(req_id, "split_failed", "could not split pane"));
+                Err((code, message)) => {
+                    let _ = resp_tx.send(err(req_id, code, message));
                 }
             }
         }

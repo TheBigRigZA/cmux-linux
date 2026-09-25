@@ -89,12 +89,30 @@ impl AppState {
     /// page to the GtkStack. The actual GLArea/split root is added by the caller (Plan 04).
     /// Returns the new workspace id.
     pub fn create_workspace(&mut self) -> u64 {
+        self.create_workspace_with(crate::spawn::SpawnSpec::default(), None, true)
+    }
+
+    /// Create a workspace, optionally naming it, starting its first terminal
+    /// from `spawn`, and optionally switching to it.
+    ///
+    /// `switch_to` is separate because workspace.create is not a focus-intent
+    /// command (SOCK-05): a script building several workspaces should not yank
+    /// the desktop between them on every call.
+    pub fn create_workspace_with(
+        &mut self,
+        spawn: crate::spawn::SpawnSpec,
+        name: Option<String>,
+        switch_to: bool,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let display_number = self.next_display_number;
         self.next_display_number += 1;
 
         let mut workspace = Workspace::new(id, display_number);
+        if let Some(requested) = name {
+            workspace.name = requested;
+        }
         let name = workspace.name.clone();
 
         // Phase 9: Use shared row builder for consistent layout including close button
@@ -114,7 +132,7 @@ impl AppState {
             id, pane_id
         );
         let (gl_area, surface_cell) =
-            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, spawn);
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
             self.ghostty_app,
@@ -133,7 +151,9 @@ impl AppState {
         self.split_engines.push(engine);
 
         let new_index = self.workspaces.len() - 1;
-        self.switch_to_index(new_index);
+        if switch_to {
+            self.switch_to_index(new_index);
+        }
 
         self.trigger_session_save();
         id
@@ -243,6 +263,8 @@ impl AppState {
             None,
             pane_id,
             crate::ghostty::surface::SurfaceIoMode::Manual { io_write_ctx: io_ctx.clone() },
+            // No local overrides: the remote host decides the shell's cwd.
+            crate::spawn::SpawnSpec::default(),
         );
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
