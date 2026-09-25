@@ -133,7 +133,7 @@ Release workflow:
 ./packaging/scripts/build-rpm.sh
 ./packaging/scripts/validate-deb.sh
 ./packaging/scripts/validate-rpm.sh
-git tag vX.Y.Z && git push origin vX.Y.Z
+git tag vX.Y.Z && git push fork vX.Y.Z
 ```
 
 There is no Sparkle auto-update on Linux. Distribution is via .deb / .rpm
@@ -141,8 +141,46 @@ artefacts attached to GitHub release tags. AppImage and Flatpak are planned
 for Phase 13 (post-port).
 
 <!-- TEAM_MODE:START -->
-## ⚡ Team Mode is ACTIVE
-IMPORTANT: Read `TEAM.md` in the project root IN FULL before processing any task.
-You are operating as Tech Lead of a multi-agent team, not as a solo developer.
-If you don't remember Team Mode being activated, re-read `TEAM.md` NOW — it contains all instructions.
+## ⚡ Team Mode (conditional)
+IMPORTANT: Before doing anything else, check whether `TEAM.md` exists in the project root.
+- If `TEAM.md` exists: read it IN FULL before processing any task. You are operating as Tech
+  Lead of a multi-agent team, not as a solo developer — `TEAM.md` contains all instructions.
+- If `TEAM.md` does not exist: ignore this block entirely and proceed as a normal solo-developer
+  session. `TEAM.md` is machine-local and gitignored (generated per-session by the fleet
+  spawner); its absence means no team is currently active.
 <!-- TEAM_MODE:END -->
+
+## Agentic layer (TAC)
+
+- Run `/prime` at session start for tiered, lane-specific context; this
+  file stays rules + pointers.
+- Validation for any change (respecting the testing policy above — no
+  local test runs): `cargo build && cargo clippy --all-targets -- -D warnings`;
+  for `daemon/remote/` add `go build ./... && go vet ./...`; for packaging
+  run the build/validate-deb/rpm scripts. Close change reports with
+  `git diff --stat`.
+- Domain experts: `/experts:socket:question`, `/experts:ghostty-ffi:question`
+  (maintained by their `self-improve` commands — never hand-edit
+  `expertise.yaml`).
+- Fleet: `just team <feature>` spawns the CMUX team defined in
+  `cmux/team.config.json`; workers finish with `CMUX-LINUX-DONE: <role> | ...`.
+- Plans go in `specs/`, fetched docs in `ai_docs/` (manifest only is
+  committed), runtime team state in `.team/` (README only is committed).
+
+## File index
+
+When creating or modifying files, add/update a 1-2 sentence entry here.
+DO NOT bloat this section with implementation details.
+
+- `src/main.rs` — GTK4 application entry for `cmux-app`; wires window, state, socket server.
+- `src/app_state.rs` — shared app state (windows, workspaces, surfaces) reached by UI and socket handlers.
+- `src/split_engine.rs` — pane split tree layout and surface placement/teardown.
+- `src/ghostty/` — libghostty FFI: surface lifecycle, runtime callbacks, key input translation.
+- `src/socket/` — v2 JSON-RPC Unix-socket server: command table, handlers, auth.
+- `src/cli/`, `src/bin/cmux.rs` — the `cmux` CLI client that talks to the socket.
+- `src/ssh/`, `daemon/remote/` — SSH remote workspaces and the Go `cmuxd-remote` helper.
+- `build.rs` — bindgen + static link of `ghostty-internal.a` against libc++.
+- `packaging/` — .deb/.rpm build + validation scripts.
+- `tests_v2/` — Python socket-protocol suite (CI/VM only).
+- `cmux/team.config.json`, `cmux/roles/` — CMUX fleet roles and lanes.
+- `scripts/spawn_team.py` — spawns the fleet (`just team <feature>`).

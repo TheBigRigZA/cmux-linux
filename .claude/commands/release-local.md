@@ -1,13 +1,14 @@
 # Release Local
 
-Full end-to-end release built locally. Bumps version, updates changelog, tags, then builds/signs/notarizes/uploads via `scripts/build-sign-upload.sh`.
+Bump version, update changelog, build and validate the .deb/.rpm locally, tag, and push to
+`fork`. Does not publish a GitHub release (use `/release` for that).
 
 ## Steps
 
 ### 1. Determine the new version number
 
-- Get the current version from `GhosttyTabs.xcodeproj/project.pbxproj` (look for `MARKETING_VERSION`)
-- Bump the minor version unless the user specifies otherwise (e.g., 0.54.0 → 0.55.0)
+- Get the current version from `Cargo.toml`
+- Bump the minor version unless the user specifies otherwise
 
 ### 2. Gather changes and contributors since the last release
 
@@ -18,11 +19,11 @@ Full end-to-end release built locally. Bumps version, updates changelog, tags, t
 - If there are no user-facing changes, ask the user if they still want to release
 - **Collect contributors:** For each PR referenced in the commits, get the author:
   ```bash
-  gh pr view <N> --repo manaflow-ai/cmux --json author --jq '.author.login'
+  gh pr view <N> --repo TheBigRigZA/cmux-linux --json author --jq '.author.login'
   ```
 - Also check for linked issue reporters (the person who filed the bug):
   ```bash
-  gh issue view <N> --repo manaflow-ai/cmux --json author --jq '.author.login'
+  gh issue view <N> --repo TheBigRigZA/cmux-linux --json author --jq '.author.login'
   ```
 - Build a deduplicated list of all contributor `@handle`s for the release
 
@@ -32,33 +33,28 @@ Full end-to-end release built locally. Bumps version, updates changelog, tags, t
 - **Only include changes that affect the end-user experience**
 - Write clear, user-facing descriptions (not raw commit messages)
 - **Credit contributors inline** (see Contributor Credits below)
-- Also update `docs-site/content/docs/changelog.mdx` if it exists
 
 ### 4. Bump the version
 
-- Run: `./scripts/bump-version.sh` (bumps minor by default)
+- Run: `./scripts/bump-version.sh` (bumps minor by default; pass `patch`/`major`/`X.Y.Z` to override)
 
-### 5. Commit, tag, and push
+### 5. Build and validate packages
 
-- Stage: `CHANGELOG.md`, `GhosttyTabs.xcodeproj/project.pbxproj`
+- `cargo build --release`
+- `./packaging/scripts/build-deb.sh && ./packaging/scripts/validate-deb.sh`
+- `./packaging/scripts/build-rpm.sh && ./packaging/scripts/validate-rpm.sh`
+
+### 6. Commit, tag, and push to `fork`
+
+- Stage: `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`
 - Commit message: `Bump version to X.Y.Z`
-- Create tag: `git tag vX.Y.Z`
-- Push: `git push origin main && git push origin vX.Y.Z`
+- `git push fork main`
+- `git tag vX.Y.Z && git push fork vX.Y.Z`
 
-### 6. Build, sign, notarize, and upload
+### 7. Report
 
-```bash
-./scripts/build-sign-upload.sh vX.Y.Z
-```
-
-This script handles: GhosttyKit build, xcodebuild, Sparkle key injection, codesigning, notarization (app + DMG), appcast generation, GitHub release upload, homebrew cask update, and cleanup.
-
-If the script fails, run `say "cmux release failed"`.
-
-### 7. Verify homebrew cask
-
-- Run `bash tests/test_homebrew_sha.sh` to confirm the cask SHA matches the release DMG
-- Update the homebrew-cmux submodule pointer: `git add homebrew-cmux && git commit -m "Update homebrew-cmux submodule to latest" && git push origin main`
+- Print the paths of the built `dist/cmux_*.deb` and `dist/cmux-*.rpm` for the user to
+  inspect/install locally
 
 ## Changelog Guidelines
 

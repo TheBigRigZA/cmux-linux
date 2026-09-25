@@ -1,51 +1,30 @@
 ---
 name: cmux-debug-windows
-description: Manage cmux debug windows and related debug menu wiring for Sidebar Debug, Background Debug, and Menu Bar Extra Debug. Use this when the user asks to open/tune these debug controls, add or adjust Debug menu entries, or capture/copy a combined debug config snapshot.
+description: "INACTIVE on cmux-linux. This skill managed macOS SwiftUI debug windows (Sidebar/Background/Menu Bar Extra Debug) that were removed with the Swift sources during the Linux GTK4 port. Do not invoke; no GTK4 equivalent exists yet."
 ---
 
-# cmux Debug Windows
+# cmux Debug Windows (inactive on Linux)
 
-Keep this workflow focused on existing debug windows and menu entries. Do not add a new utility/debug control window unless the user asks explicitly.
+This skill is a leftover from the macOS Swift + AppKit build. It tuned NSUserDefaults-backed
+debug panes in `Sources/cmuxApp.swift` and `Sources/AppDelegate.swift` — both files were
+removed when this repo was rewritten as a Rust + GTK4 app (see CLAUDE.md). There is no
+`xcodebuild -project GhosttyTabs.xcodeproj` step and no `./scripts/reload.sh` /
+`reloadp.sh` / `reloads.sh` on Linux; none of those exist in this repo.
 
-## Workflow
+The Linux port currently has no equivalent debug-window surface: no GTK inspector wiring
+of its own, no `RUST_LOG`/logging crate integration here, no custom `GTK_DEBUG` handling in
+`src/`. What actually exists today:
 
-1. Verify debug menu wiring in `Sources/cmuxApp.swift` under `CommandMenu("Debug")`.
-   - Menu path in app: `Debug` → `Debug Windows` → window entry.
-   - The `Debug` menu only exists in DEBUG builds (`./scripts/reload.sh --tag ...`).
-   - Release builds (`reloadp.sh`, `reloads.sh`) do not show this menu.
-2. Keep these actions available in `Menu("Debug Windows")`:
-- `Sidebar Debug…`
-- `Background Debug…`
-- `Menu Bar Extra Debug…`
-- `Open All Debug Windows`
-3. Reuse existing per-window copy buttons (`Copy Config`) in each debug window before adding new UI.
-4. For one combined payload, run:
-```bash
-skills/cmux-debug-windows/scripts/debug_windows_snapshot.sh --copy
-```
-5. After code edits, run build + tagged reload:
-```bash
-xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug -destination 'platform=macOS' build
-./scripts/reload.sh --tag <tag>
-```
+- `cmux identify`, `cmux list-windows`, `cmux list-workspaces`, `cmux list-panes`,
+  `cmux list-surfaces`, `cmux health`, `cmux read-text` — the CLI's real window/workspace/
+  pane/surface introspection commands (`src/cli/mod.rs`, `src/socket/mod.rs`). `cmux identify`
+  flashes a window/pane for visual identification; it is unrelated to this skill's original
+  scope.
+- `GTK_DEBUG=interactive ./target/debug/cmux-app` — GTK4's own built-in interactive
+  inspector, launched via the standard `GTK_DEBUG` environment variable, not anything this
+  skill wires up.
 
-## Key Files
-
-- `Sources/cmuxApp.swift`: Debug menu entries and debug window controllers/views.
-- `Sources/AppDelegate.swift`: Menu bar extra debug settings payload and defaults keys.
-
-## Script
-
-- `scripts/debug_windows_snapshot.sh`
-
-Purpose:
-- Reads current debug-related defaults values.
-- Prints one combined snapshot for sidebar/background/menu bar extra.
-- Optionally copies it to clipboard.
-
-Examples:
-```bash
-skills/cmux-debug-windows/scripts/debug_windows_snapshot.sh
-skills/cmux-debug-windows/scripts/debug_windows_snapshot.sh --copy
-skills/cmux-debug-windows/scripts/debug_windows_snapshot.sh --domain <bundle-id> --copy
-```
+Do not invoke this skill. If GTK4-native debug tooling (inspector toggle, log-level control,
+etc.) is added in the future, replace this file with a real workflow at that time; until then
+`scripts/debug_windows_snapshot.sh` (macOS `defaults`/`pbcopy`-based) is dead code kept for
+reference only and exits non-zero if run.

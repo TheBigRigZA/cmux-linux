@@ -1,65 +1,50 @@
 ---
 name: release
-description: "Prepare and ship a cmux release end-to-end: choose the next version, curate user-facing changelog entries, bump versions, open and monitor a release PR, merge, tag, and verify published artifacts. Use when asked to cut, prepare, publish, or tag a new release."
+description: "Prepare and ship a cmux release end-to-end: choose the next version, curate user-facing changelog entries, bump versions, build and validate .deb/.rpm packages, tag, push to fork, and publish a GitHub release. Use when asked to cut, prepare, publish, or tag a new release."
 ---
 
 # Release
 
-Run this workflow to prepare and publish a cmux release.
+Run this workflow to prepare and publish a cmux-linux release.
 
 ## Workflow
 
 1. Determine the version:
-- Read `MARKETING_VERSION` from `GhosttyTabs.xcodeproj/project.pbxproj`.
+- Read `version` from `Cargo.toml`.
 - Default to a minor bump unless the user explicitly requests patch/major/specific version.
 
-2. Create a release branch:
-- `git checkout -b release/vX.Y.Z`
-
-3. Gather user-facing changes and contributors since the last tag:
+2. Gather user-facing changes and contributors since the last tag:
 - `git describe --tags --abbrev=0`
 - `git log --oneline <last-tag>..HEAD --no-merges`
 - Keep only end-user visible changes (features, bug fixes, UX/perf behavior).
-- **Collect contributors:** For each PR, get the author with `gh pr view <N> --repo manaflow-ai/cmux --json author --jq '.author.login'`. Also check linked issue reporters with `gh issue view <N> --json author --jq '.author.login'`.
+- **Collect contributors:** For each PR, get the author with `gh pr view <N> --repo TheBigRigZA/cmux-linux --json author --jq '.author.login'`. Also check linked issue reporters with `gh issue view <N> --repo TheBigRigZA/cmux-linux --json author --jq '.author.login'`.
 - Build a deduplicated list of all contributor `@handle`s.
 
-4. Update changelogs:
-- Update `CHANGELOG.md`.
-- Do not edit a separate docs changelog file; `web/app/docs/changelog/page.tsx` renders from `CHANGELOG.md`.
+3. Update `CHANGELOG.md`:
 - Use categories `Added`, `Changed`, `Fixed`, `Removed`.
 - **Credit contributors inline** (see Contributor Credits below).
 - If no user-facing changes exist, confirm with the user before continuing.
 
-5. Bump app version metadata:
-- Prefer `./scripts/bump-version.sh`:
-  - `./scripts/bump-version.sh` (minor)
-  - `./scripts/bump-version.sh patch|major|X.Y.Z`
-- Ensure both `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` are updated.
+4. Bump version and build packages:
+- `./scripts/bump-version.sh` (minor) or `./scripts/bump-version.sh patch|major|X.Y.Z`
+- `cargo build --release`
+- `./packaging/scripts/build-deb.sh && ./packaging/scripts/validate-deb.sh`
+- `./packaging/scripts/build-rpm.sh && ./packaging/scripts/validate-rpm.sh`
 
-6. Commit and push branch:
-- Stage release files (changelog + version updates).
+5. Commit and push to `fork`:
+- Stage `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`.
 - Commit with `Bump version to X.Y.Z`.
-- `git push -u origin release/vX.Y.Z`.
+- `git push fork main`.
 
-7. Create release PR:
-- `gh pr create --title "Release vX.Y.Z" --body "..."`
-- Include a concise changelog summary in the PR body.
-
-8. Watch CI and resolve failures:
-- `gh pr checks --watch`
-- Fix failing checks, push, and wait for green.
-
-9. Merge and sync `main`:
-- `gh pr merge --squash --delete-branch`
-- `git checkout main && git pull --ff-only`
-
-10. Create and push tag:
+6. Tag and push:
 - `git tag vX.Y.Z`
-- `git push origin vX.Y.Z`
+- `git push fork vX.Y.Z`
 
-11. Verify release workflow and assets:
-- `gh run watch --repo manaflow-ai/cmux`
-- Confirm release exists in GitHub Releases and includes `cmux-macos.dmg`.
+7. Publish the GitHub release:
+- `gh release create vX.Y.Z dist/cmux_X.Y.Z_amd64.deb dist/cmux-X.Y.Z-*.rpm --repo TheBigRigZA/cmux-linux --title "vX.Y.Z" --notes "..."`
+
+8. Verify:
+- `gh release view vX.Y.Z --repo TheBigRigZA/cmux-linux` and confirm both `.deb` and `.rpm` assets are attached.
 
 ## Changelog Rules
 

@@ -1,71 +1,37 @@
 # Release Nightly
 
-End-to-end release via PR flow: bump version, update changelog, create PR, merge, tag, then build locally via `scripts/build-sign-upload.sh`.
+Unattended end-to-end release: bump version, update changelog from raw commit log, build and
+validate .deb/.rpm, tag, push to `fork`, and publish a GitHub release. No PR, no signing step.
 
 ## Steps
 
-### Phase 1: Version bump, changelog, PR, merge, tag
+1. **Determine version**
+   - Read `Cargo.toml`, bump minor: `./scripts/bump-version.sh`
 
-1. **Determine the new version number**
-   - Get the current version from `GhosttyTabs.xcodeproj/project.pbxproj` (look for `MARKETING_VERSION`)
-   - Bump the minor version unless the user specifies otherwise (e.g., 0.48.0 → 0.49.0)
+2. **Gather changes**
+   - `git describe --tags --abbrev=0` then `git log --oneline <last-tag>..HEAD --no-merges`
+   - Filter to end-user-visible changes; categorize Added/Changed/Fixed/Removed
+   - Contributors via `gh pr view <N> --repo TheBigRigZA/cmux-linux --json author --jq '.author.login'` (best-effort; skip silently if a PR lookup fails — this is unattended)
 
-2. **Create a release branch**
-   - Create branch: `git checkout -b release/vX.Y.Z`
-
-3. **Gather changes and contributors since the last release**
-   - Find the most recent git tag: `git describe --tags --abbrev=0`
-   - Get commits since that tag: `git log --oneline <last-tag>..HEAD --no-merges`
-   - **Filter for end-user visible changes only** - ignore developer tooling, CI, docs, tests
-   - Categorize changes into: Added, Changed, Fixed, Removed
-   - **Collect contributors:** For each PR referenced in the commits, get the author:
-     ```bash
-     gh pr view <N> --repo manaflow-ai/cmux --json author --jq '.author.login'
-     ```
-   - Also check for linked issue reporters (the person who filed the bug):
-     ```bash
-     gh issue view <N> --repo manaflow-ai/cmux --json author --jq '.author.login'
-     ```
-   - Build a deduplicated list of all contributor `@handle`s for the release
-
-4. **Update the changelog**
-   - Add a new section at the top of `CHANGELOG.md` with the new version and today's date
+3. **Update `CHANGELOG.md`**
+   - Add a new section at the top with the new version and today's date
    - **Only include changes that affect the end-user experience**
    - Write clear, user-facing descriptions (not raw commit messages)
    - **Credit contributors inline** (see Contributor Credits below)
-   - Also update `docs-site/content/docs/changelog.mdx` if it exists
-   - If there are no user-facing changes, ask the user if they still want to release
 
-5. **Bump the version**
-   - Run `./scripts/bump-version.sh` (bumps minor by default)
+4. **Build and validate**
+   - `cargo build --release`
+   - `./packaging/scripts/build-deb.sh && ./packaging/scripts/validate-deb.sh`
+   - `./packaging/scripts/build-rpm.sh && ./packaging/scripts/validate-rpm.sh`
+   - Abort the run if either validate script exits non-zero
 
-6. **Commit and push the release branch**
-   - Stage: `CHANGELOG.md`, `GhosttyTabs.xcodeproj/project.pbxproj`
-   - Commit message: `Bump version to X.Y.Z`
-   - Push: `git push -u origin release/vX.Y.Z`
+5. **Commit, tag, push**
+   - Stage `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`; commit `Bump version to X.Y.Z`
+   - `git push fork main`
+   - `git tag vX.Y.Z && git push fork vX.Y.Z`
 
-7. **Create PR and wait for CI**
-   - `gh pr create --title "Release vX.Y.Z" --body "...changelog..."`
-   - `gh pr checks --watch`
-
-8. **Merge PR**
-   - `gh pr merge --squash --delete-branch`
-   - `git checkout main && git pull`
-
-9. **Create and push the tag**
-   - `git tag vX.Y.Z && git push origin vX.Y.Z`
-
-### Phase 2: Local build, sign, notarize, upload
-
-10. **Run the build script**
-
-```bash
-./scripts/build-sign-upload.sh vX.Y.Z
-```
-
-This script handles: GhosttyKit build, xcodebuild, Sparkle key injection, codesigning, notarization (app + DMG), appcast generation, GitHub release upload, and cleanup.
-
-If the script fails, run `say "cmux release failed"`.
+6. **Publish**
+   - `gh release create vX.Y.Z dist/cmux_X.Y.Z_amd64.deb dist/cmux-X.Y.Z-*.rpm --repo TheBigRigZA/cmux-linux --title "vX.Y.Z (nightly)" --notes "<changelog summary>"`
 
 ## Changelog Guidelines
 
